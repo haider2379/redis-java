@@ -18,6 +18,10 @@ public class Main {
           serverSocket.setReuseAddress(true);
           // Wait for connection from client.
           clientSocket = serverSocket.accept();
+          // The returned Socket is the client's TCP connection
+          clientSocket = serverSocket.accept();
+          // Send the response to the client
+          clientSocket.getOutputStream().write("+PONG\r\n".getBytes());
         } catch (IOException e) {
           System.out.println("IOException: " + e.getMessage());
         } finally {
