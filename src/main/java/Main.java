@@ -2,34 +2,38 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+
 public class Main {
-    public static void main(String[] args){
-        ServerSocket serverSocket = null;
-        Socket clientSocket = null;
+    public static void main(String[] args) {
         int port = 6379;
-        try {
-            serverSocket = new ServerSocket(port);
-            // Since the tester restarts your program quite often, setting SO_REUSEADDR
-            // ensures that we don't run into 'Address already in use' errors
+
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
+            // tester restarts your program quite often, setting SO_REUSEADDR ensures no 'Address
+            // already in use' errors
             serverSocket.setReuseAddress(true);
-            // Wait for connection from client.
-            clientSocket = serverSocket.accept();
-            InputStream inputStream = clientSocket.getInputStream();
+
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                new Thread(() -> handleClient(clientSocket)).start();
+            }
+
+        } catch (IOException e) {
+            System.out.println("IOException: " + e.getMessage());
+        }
+    }
+
+    private static void handleClient(Socket clientSocket) {
+        try {
+            int bytesRead = 0;
             byte[] buffer = new byte[1024];
-            int bytesRead;
-            while ((bytesRead = inputStream.read(buffer)) != -1) {
+
+            while (bytesRead != -1) {
+                InputStream inputStream = clientSocket.getInputStream();
+                bytesRead = inputStream.read(buffer);
                 clientSocket.getOutputStream().write("+PONG\r\n".getBytes());
             }
         } catch (IOException e) {
             System.out.println("IOException: " + e.getMessage());
-        } finally {
-            try {
-                if (clientSocket != null) {
-                    clientSocket.close();
-                }
-            } catch (IOException e) {
-                System.out.println("IOException: " + e.getMessage());
-            }
         }
     }
 }
