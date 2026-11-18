@@ -1,62 +1,38 @@
-import java.io.*;
-import java.net.*;
-import java.nio.*;
-import java.nio.channels.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.io.BufferedInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.List;
+
 public class Main {
-    private static final int PORT = 6379;
-    private static CommandHandler commandHandler = new CommandHandler();
     public static void main(String[] args) throws IOException {
-        ServerSocketChannel serverChannel = ServerSocketChannel.open();
-        serverChannel.bind(new InetSocketAddress(PORT));
-        serverChannel.configureBlocking(false);
-        Selector selector = Selector.open();
-        serverChannel.register(selector, SelectionKey.OP_ACCEPT);
-        System.out.println("Redis server listening on port " + PORT);
-        while (true) {
-            selector.select();
-            Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
-            while (keys.hasNext()) {
-                SelectionKey key = keys.next();
-                keys.remove();
-                if (key.isAcceptable()) {
-                    SocketChannel clientChannel = serverChannel.accept();
-                    clientChannel.configureBlocking(false);
-                    clientChannel.register(selector, SelectionKey.OP_READ);
-                } else if (key.isReadable()) {
-                    SocketChannel clientChannel = (SocketChannel) key.channel();
-                    try {
-                        ByteBuffer buffer = ByteBuffer.allocate(1024);
-                        int bytesRead = clientChannel.read(buffer);
-                        if (bytesRead == -1) {
-                            clientChannel.close();
-                            continue;
-                        }
-                        String input = new String(buffer.array(), 0, bytesRead).trim();
-                        String[] tokens = parseRESP(input);
-                        if (tokens != null && tokens.length > 0) {
-                            String response = commandHandler.handle(tokens);
-                            clientChannel.write(ByteBuffer.wrap(response.getBytes()));
-                        }
-                    } catch (IOException e) {
-                        clientChannel.close();
-                    }
-                }
+        System.out.println("Logs from your program will appear here!");
+
+        CommandHandler handler = new CommandHandler(); // one shared instance = one shared store
+
+        try (ServerSocket server = new ServerSocket(6379)) {
+            server.setReuseAddress(true);
+            while (true) {
+                Socket client = server.accept();
+                Thread.startVirtualThread(() -> serve(client, handler));
             }
         }
     }
-    private static String[] parseRESP(String input) {
-        if (input.startsWith("*")) {
-            String[] lines = input.split("\r\n");
-            int numElements = Integer.parseInt(lines[0].substring(1));
-            String[] tokens = new String[numElements];
-            for (int i = 0; i < numElements; i++) {
-                tokens[i] = lines[i * 2 + 2];
+
+    private static void serve(Socket client, CommandHandler handler) {
+        try (client;
+             InputStream in = new BufferedInputStream(client.getInputStream());
+             OutputStream out = client.getOutputStream()) {
+
+            List<String> command;
+            while ((command = Resp.readCommand(in)) != null) {
+                out.write(handler.handle(command));
+                out.flush();
             }
-            return tokens;
-        } else {
-            return input.split(" ");
+        } catch (IOException e) {
+            System.out.println("Client error: " + e.getMessage());
         }
     }
 }
