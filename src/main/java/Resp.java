@@ -4,6 +4,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.io.ByteArrayOutputStream;
+import java.util.List;
 
 public final class Resp {
     private Resp() {}
@@ -29,6 +31,15 @@ public final class Resp {
 
     public static byte[] integer(long n) {
         return (":" + n + "\r\n").getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static byte[] array(List<String> items) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(("*" + items.size() + "\r\n").getBytes(StandardCharsets.UTF_8));
+        for (String item : items) {
+            out.writeBytes(bulk(item));
+        }
+        return out.toByteArray();
     }
 
     public static byte[] wrongType() {

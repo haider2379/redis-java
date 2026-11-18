@@ -20,6 +20,7 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "LRANGE" -> lrange(cmd);
             case "PING"  -> Resp.simple("PONG");
             case "ECHO"  -> echo(cmd);
             case "SET"   -> set(cmd);
@@ -105,6 +106,50 @@ public class CommandHandler {
         });
 
         return wrongType[0] ? Resp.wrongType() : Resp.integer(newSize[0]);
+    }
+
+    @SuppressWarnings("unchecked")
+    private byte[] lrange(List<String> cmd) {
+        if (cmd.size() != 4) return wrongArgs("lrange");
+
+        long start, stop;
+        try {
+            start = Long.parseLong(cmd.get(2));
+            stop = Long.parseLong(cmd.get(3));
+        } catch (NumberFormatException e) {
+            return Resp.error("value is not an integer or out of range");
+        }
+
+        byte[][] reply = new byte[1][];
+
+        // compute() holds the key's lock, so we never read a list while RPUSH is changing it
+        store.compute(cmd.get(1), (k, existing) -> {
+            if (existing == null || existing.isExpired()) {
+                reply[0] = Resp.array(List.of());
+                return existing;
+            }
+            if (!(existing.value() instanceof List<?> list)) {
+                reply[0] = Resp.wrongType();
+                return existing;
+            }
+
+            int len = list.size();
+            long from = start < 0 ? Math.max(len + start, 0) : start;
+            long to = stop < 0 ? len + stop : Math.min(stop, len - 1);
+
+            if (from >= len || from > to) {
+                reply[0] = Resp.array(List.of());
+            } else {
+                List<String> slice = new ArrayList<>();
+                for (long i = from; i <= to; i++) {
+                    slice.add(((List<String>) list).get((int) i));
+                }
+                reply[0] = Resp.array(slice);
+            }
+            return existing;
+        });
+
+        return reply[0];
     }
 
     private byte[] wrongArgs(String command) {
