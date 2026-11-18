@@ -29,6 +29,10 @@ public final class Resp {
         return "$-1\r\n".getBytes(StandardCharsets.UTF_8);
     }
 
+    public static byte[] nullArray() {
+        return "*-1\r\n".getBytes(StandardCharsets.UTF_8);
+    }
+
     public static byte[] integer(long n) {
         return (":" + n + "\r\n").getBytes(StandardCharsets.UTF_8);
     }

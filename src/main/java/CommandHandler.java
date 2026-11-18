@@ -165,29 +165,44 @@ public class CommandHandler {
 
     @SuppressWarnings("unchecked")
     private byte[] lpop(List<String> cmd) {
-        if (cmd.size() != 2) return wrongArgs("lpop");
+        if (cmd.size() < 2 || cmd.size() > 3) return wrongArgs("lpop");
 
+        boolean hasCount = cmd.size() == 3;
+        int count = 1;
+        if (hasCount) {
+            try {
+                count = Integer.parseInt(cmd.get(2));
+            } catch (NumberFormatException e) {
+                return Resp.error("value is out of range, must be positive");
+            }
+            if (count < 0) return Resp.error("value is out of range, must be positive");
+        }
+
+        final int n = count;
         byte[][] reply = new byte[1][];
 
-        // compute() is atomic per key, so two clients can't pop the same element
         store.compute(cmd.get(1), (k, existing) -> {
             if (existing == null || existing.isExpired()) {
-                reply[0] = Resp.nullBulk();
-                return null;                      // also clears an expired entry
+                reply[0] = hasCount ? Resp.nullArray() : Resp.nullBulk();
+                return null;
             }
             if (!(existing.value() instanceof List<?> l)) {
                 reply[0] = Resp.wrongType();
-                return existing;                  // leave the string untouched
+                return existing;
             }
 
             List<String> list = (List<String>) l;
-            if (list.isEmpty()) {
-                reply[0] = Resp.nullBulk();
-                return null;
+
+            if (!hasCount) {
+                reply[0] = Resp.bulk(list.remove(0));
+            } else {
+                int toRemove = Math.min(n, list.size());   // asking for more than exists is fine
+                List<String> removed = new ArrayList<>(list.subList(0, toRemove));
+                list.subList(0, toRemove).clear();
+                reply[0] = Resp.array(removed);
             }
 
-            reply[0] = Resp.bulk(list.remove(0));
-            return list.isEmpty() ? null : existing;   // returning null deletes the key
+            return list.isEmpty() ? null : existing;       // delete the key when the list empties
         });
 
         return reply[0];
