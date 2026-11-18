@@ -3,9 +3,16 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class CommandHandler {
-    private final Map<String, String> store = new ConcurrentHashMap<>();
+    private static final long NO_EXPIRY = -1;
 
-    /** Takes a parsed command like ["SET", "foo", "bar"] and returns the RESP reply bytes. */
+    private record Entry(String value, long expiresAtMs) {
+        boolean isExpired() {
+            return expiresAtMs != NO_EXPIRY && System.currentTimeMillis() >= expiresAtMs;
+        }
+    }
+
+    private final Map<String, Entry> store = new ConcurrentHashMap<>();
+
     public byte[] handle(List<String> cmd) {
         if (cmd.isEmpty()) return Resp.error("empty command");
 
@@ -26,14 +33,43 @@ public class CommandHandler {
 
     private byte[] set(List<String> cmd) {
         if (cmd.size() < 3) return wrongArgs("set");
-        store.put(cmd.get(1), cmd.get(2));
+
+        long expiresAt = NO_EXPIRY;
+
+        for (int i = 3; i < cmd.size(); i++) {
+            String option = cmd.get(i).toUpperCase();
+            if (option.equals("PX") || option.equals("EX")) {
+                if (i + 1 >= cmd.size()) return Resp.error("syntax error");
+                try {
+                    long amount = Long.parseLong(cmd.get(i + 1));
+                    if (amount <= 0) return Resp.error("invalid expire time in 'set' command");
+                    long millis = option.equals("EX") ? amount * 1000 : amount;
+                    expiresAt = System.currentTimeMillis() + millis;
+                } catch (NumberFormatException e) {
+                    return Resp.error("value is not an integer or out of range");
+                }
+                i++;
+            } else {
+                return Resp.error("syntax error");
+            }
+        }
+
+        store.put(cmd.get(1), new Entry(cmd.get(2), expiresAt));
         return Resp.simple("OK");
     }
 
     private byte[] get(List<String> cmd) {
         if (cmd.size() < 2) return wrongArgs("get");
-        String value = store.get(cmd.get(1));
-        return value == null ? Resp.nullBulk() : Resp.bulk(value);
+
+        String key = cmd.get(1);
+        Entry entry = store.get(key);
+        if (entry == null) return Resp.nullBulk();
+
+        if (entry.isExpired()) {
+            store.remove(key, entry);
+            return Resp.nullBulk();
+        }
+        return Resp.bulk(entry.value());
     }
 
     private byte[] wrongArgs(String command) {
