@@ -2,6 +2,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class CommandHandler {
     private static final long NO_EXPIRY = -1;
@@ -14,12 +20,15 @@ public class CommandHandler {
     }
 
     private final Map<String, Entry> store = new ConcurrentHashMap<>();
+    // key -> clients blocked on that list, oldest first
+    private final Map<String, Queue<CompletableFuture<String>>> waiters = new ConcurrentHashMap<>();
 
     public byte[] handle(List<String> cmd) {
         if (cmd.isEmpty()) return Resp.error("empty command");
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "BLPOP" -> blpop(cmd);
             case "LPOP" -> lpop(cmd);
             case "LLEN" -> llen(cmd);
             case "LPUSH" -> push(cmd, true);
@@ -112,8 +121,9 @@ public class CommandHandler {
                 list.addAll(elements);
             }
 
-            newSize[0] = list.size();
-            return current;
+            newSize[0] = list.size();          // RPUSH reports the length *before* blocked clients take elements
+            serveWaiters(key, list);
+            return list.isEmpty() ? null : current;
         });
 
         return wrongType[0] ? Resp.wrongType() : Resp.integer(newSize[0]);
@@ -164,6 +174,64 @@ public class CommandHandler {
     }
 
     @SuppressWarnings("unchecked")
+    private byte[] blpop(List<String> cmd) {
+        if (cmd.size() != 3) return wrongArgs("blpop");
+
+        String key = cmd.get(1);
+        double seconds;
+        try {
+            seconds = Double.parseDouble(cmd.get(2));
+        } catch (NumberFormatException e) {
+            return Resp.error("timeout is not a float or out of range");
+        }
+        if (seconds < 0) return Resp.error("timeout is negative");
+
+        CompletableFuture<String> waiter = new CompletableFuture<>();
+        String[] immediate = new String[1];
+        boolean[] wrongType = new boolean[1];
+
+        // Check-and-register is atomic with respect to pushes on the same key
+        store.compute(key, (k, existing) -> {
+            if (existing != null && !existing.isExpired()) {
+                if (!(existing.value() instanceof List<?> l)) {
+                    wrongType[0] = true;
+                    return existing;
+                }
+                List<String> list = (List<String>) l;
+                if (!list.isEmpty()) {
+                    immediate[0] = list.remove(0);            // data already there: no need to block
+                    return list.isEmpty() ? null : existing;
+                }
+            }
+            waiters.computeIfAbsent(key, x -> new ConcurrentLinkedQueue<>()).add(waiter);
+            return existing;
+        });
+
+        if (wrongType[0]) return Resp.wrongType();
+        if (immediate[0] != null) return Resp.array(List.of(key, immediate[0]));
+
+        try {
+            String element = (seconds == 0)
+                    ? waiter.get()                                              // 0 = wait forever
+                    : waiter.get((long) (seconds * 1000), TimeUnit.MILLISECONDS);
+            return Resp.array(List.of(key, element));
+
+        } catch (TimeoutException e) {
+            // A push may have delivered at the last instant. complete(null) tells us who won the race.
+            if (waiter.complete(null)) {
+                Queue<CompletableFuture<String>> queue = waiters.get(key);
+                if (queue != null) queue.remove(waiter);
+                return Resp.nullArray();                                       // timed out: *-1\r\n
+            }
+            return Resp.array(List.of(key, waiter.getNow(null)));              // delivered just in time
+
+        } catch (InterruptedException | ExecutionException e) {
+            Thread.currentThread().interrupt();
+            return Resp.error("interrupted");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
     private byte[] lpop(List<String> cmd) {
         if (cmd.size() < 2 || cmd.size() > 3) return wrongArgs("lpop");
 
@@ -206,6 +274,18 @@ public class CommandHandler {
         });
 
         return reply[0];
+    }
+
+    private void serveWaiters(String key, List<String> list) {
+        Queue<CompletableFuture<String>> queue = waiters.get(key);
+        if (queue == null) return;
+
+        while (!list.isEmpty()) {
+            CompletableFuture<String> waiter = queue.poll();   // oldest first
+            if (waiter == null) break;
+            // complete() fails if that waiter already timed out; then the element stays and we try the next waiter
+            if (waiter.complete(list.get(0))) list.remove(0);
+        }
     }
 
     private byte[] llen(List<String> cmd) {
