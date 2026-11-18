@@ -20,12 +20,13 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "LPUSH" -> push(cmd, true);
             case "LRANGE" -> lrange(cmd);
             case "PING"  -> Resp.simple("PONG");
             case "ECHO"  -> echo(cmd);
             case "SET"   -> set(cmd);
             case "GET"   -> get(cmd);
-            case "RPUSH" -> rpush(cmd);
+            case "RPUSH" -> push(cmd, false);
             default      -> Resp.error("unknown command '" + cmd.get(0) + "'");
         };
     }
@@ -78,8 +79,8 @@ public class CommandHandler {
     }
 
     @SuppressWarnings("unchecked")
-    private byte[] rpush(List<String> cmd) {
-        if (cmd.size() < 3) return wrongArgs("rpush");
+    private byte[] push(List<String> cmd, boolean left) {
+        if (cmd.size() < 3) return wrongArgs(left ? "lpush" : "rpush");
 
         String key = cmd.get(1);
         List<String> elements = cmd.subList(2, cmd.size());
@@ -87,21 +88,29 @@ public class CommandHandler {
         int[] newSize = new int[1];
         boolean[] wrongType = new boolean[1];
 
-        // compute() runs atomically per key, so two clients pushing at once can't corrupt the list
         store.compute(key, (k, existing) -> {
             Entry current = (existing != null && !existing.isExpired()) ? existing : null;
 
+            List<String> list;
             if (current == null) {
-                List<String> list = new ArrayList<>(elements);
-                newSize[0] = list.size();
-                return new Entry(list, NO_EXPIRY);
-            }
-            if (current.value() instanceof List<?> list) {
-                ((List<String>) list).addAll(elements);
-                newSize[0] = list.size();
+                list = new ArrayList<>();
+                current = new Entry(list, NO_EXPIRY);
+            } else if (current.value() instanceof List<?> l) {
+                list = (List<String>) l;
+            } else {
+                wrongType[0] = true;
                 return current;
             }
-            wrongType[0] = true;
+
+            if (left) {
+                for (String element : elements) {
+                    list.add(0, element); // each element goes to the front, one at a time
+                }
+            } else {
+                list.addAll(elements);
+            }
+
+            newSize[0] = list.size();
             return current;
         });
 
