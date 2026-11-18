@@ -20,6 +20,7 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "LPOP" -> lpop(cmd);
             case "LLEN" -> llen(cmd);
             case "LPUSH" -> push(cmd, true);
             case "LRANGE" -> lrange(cmd);
@@ -157,6 +158,36 @@ public class CommandHandler {
                 reply[0] = Resp.array(slice);
             }
             return existing;
+        });
+
+        return reply[0];
+    }
+
+    @SuppressWarnings("unchecked")
+    private byte[] lpop(List<String> cmd) {
+        if (cmd.size() != 2) return wrongArgs("lpop");
+
+        byte[][] reply = new byte[1][];
+
+        // compute() is atomic per key, so two clients can't pop the same element
+        store.compute(cmd.get(1), (k, existing) -> {
+            if (existing == null || existing.isExpired()) {
+                reply[0] = Resp.nullBulk();
+                return null;                      // also clears an expired entry
+            }
+            if (!(existing.value() instanceof List<?> l)) {
+                reply[0] = Resp.wrongType();
+                return existing;                  // leave the string untouched
+            }
+
+            List<String> list = (List<String>) l;
+            if (list.isEmpty()) {
+                reply[0] = Resp.nullBulk();
+                return null;
+            }
+
+            reply[0] = Resp.bulk(list.remove(0));
+            return list.isEmpty() ? null : existing;   // returning null deletes the key
         });
 
         return reply[0];
