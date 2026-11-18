@@ -27,6 +27,16 @@ public final class Resp {
         return "$-1\r\n".getBytes(StandardCharsets.UTF_8);
     }
 
+    public static byte[] integer(long n) {
+        return (":" + n + "\r\n").getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static byte[] wrongType() {
+        // Real Redis uses the WRONGTYPE prefix instead of the generic ERR
+        return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
     // ---------- Parsing ----------
 
     /** Reads one command (an array of bulk strings). Returns null when the client disconnects. */

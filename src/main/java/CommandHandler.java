@@ -1,3 +1,4 @@
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -5,7 +6,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class CommandHandler {
     private static final long NO_EXPIRY = -1;
 
-    private record Entry(String value, long expiresAtMs) {
+    // value is either a String or a List<String>
+    private record Entry(Object value, long expiresAtMs) {
         boolean isExpired() {
             return expiresAtMs != NO_EXPIRY && System.currentTimeMillis() >= expiresAtMs;
         }
@@ -18,11 +20,12 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
-            case "PING" -> Resp.simple("PONG");
-            case "ECHO" -> echo(cmd);
-            case "SET"  -> set(cmd);
-            case "GET"  -> get(cmd);
-            default     -> Resp.error("unknown command '" + cmd.get(0) + "'");
+            case "PING"  -> Resp.simple("PONG");
+            case "ECHO"  -> echo(cmd);
+            case "SET"   -> set(cmd);
+            case "GET"   -> get(cmd);
+            case "RPUSH" -> rpush(cmd);
+            default      -> Resp.error("unknown command '" + cmd.get(0) + "'");
         };
     }
 
@@ -69,7 +72,39 @@ public class CommandHandler {
             store.remove(key, entry);
             return Resp.nullBulk();
         }
-        return Resp.bulk(entry.value());
+        if (!(entry.value() instanceof String s)) return Resp.wrongType();
+        return Resp.bulk(s);
+    }
+
+    @SuppressWarnings("unchecked")
+    private byte[] rpush(List<String> cmd) {
+        if (cmd.size() < 3) return wrongArgs("rpush");
+
+        String key = cmd.get(1);
+        List<String> elements = cmd.subList(2, cmd.size());
+
+        int[] newSize = new int[1];
+        boolean[] wrongType = new boolean[1];
+
+        // compute() runs atomically per key, so two clients pushing at once can't corrupt the list
+        store.compute(key, (k, existing) -> {
+            Entry current = (existing != null && !existing.isExpired()) ? existing : null;
+
+            if (current == null) {
+                List<String> list = new ArrayList<>(elements);
+                newSize[0] = list.size();
+                return new Entry(list, NO_EXPIRY);
+            }
+            if (current.value() instanceof List<?> list) {
+                ((List<String>) list).addAll(elements);
+                newSize[0] = list.size();
+                return current;
+            }
+            wrongType[0] = true;
+            return current;
+        });
+
+        return wrongType[0] ? Resp.wrongType() : Resp.integer(newSize[0]);
     }
 
     private byte[] wrongArgs(String command) {
