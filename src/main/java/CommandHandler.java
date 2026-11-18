@@ -20,6 +20,7 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "LLEN" -> llen(cmd);
             case "LPUSH" -> push(cmd, true);
             case "LRANGE" -> lrange(cmd);
             case "PING"  -> Resp.simple("PONG");
@@ -159,6 +160,16 @@ public class CommandHandler {
         });
 
         return reply[0];
+    }
+
+    private byte[] llen(List<String> cmd) {
+        if (cmd.size() != 2) return wrongArgs("llen");
+
+        Entry entry = store.get(cmd.get(1));
+        if (entry == null || entry.isExpired()) return Resp.integer(0);
+        if (!(entry.value() instanceof List<?> list)) return Resp.wrongType();
+
+        return Resp.integer(list.size());
     }
 
     private byte[] wrongArgs(String command) {
