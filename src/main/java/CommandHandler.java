@@ -38,6 +38,8 @@ public class CommandHandler {
                     return discard(session, cmd);          // new
                 case "MULTI":
                     return Resp.error("MULTI calls can not be nested");
+                case "WATCH":
+                    return Resp.error("WATCH inside MULTI is not allowed");
                 default:
                     session.queue(cmd);
                     return Resp.simple("QUEUED");
@@ -66,6 +68,7 @@ public class CommandHandler {
             case "XADD"   -> xadd(cmd);
             case "XRANGE" -> xrange(cmd);
             case "XREAD"  -> xread(cmd);
+            case "WATCH"  -> watch(cmd);
             case "MULTI"  -> multi(session, cmd);
             case "EXEC"   -> exec(session, cmd);
             case "DISCARD"-> discard(session, cmd);
@@ -226,6 +229,13 @@ public class CommandHandler {
         if (entry.value() instanceof RedisStream) return Resp.simple("stream");
 
         return Resp.simple("none"); // streams will get their own branch in a later stage
+    }
+
+    private byte[] watch(List<String> cmd) {
+        if (cmd.size() < 2) return wrongArgs("watch");
+
+        // Tracking comes in later stages; for now we only acknowledge the command.
+        return Resp.simple("OK");
     }
 
     @SuppressWarnings("unchecked")
