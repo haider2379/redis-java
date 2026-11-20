@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.LinkedHashMap;
 
 public class CommandHandler {
     private static final long NO_EXPIRY = -1;
@@ -28,6 +29,7 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "XADD" -> xadd(cmd);
             case "TYPE" -> type(cmd);
             case "BLPOP" -> blpop(cmd);
             case "LPOP" -> lpop(cmd);
@@ -98,6 +100,7 @@ public class CommandHandler {
 
         if (entry.value() instanceof String) return Resp.simple("string");
         if (entry.value() instanceof List<?>) return Resp.simple("list");
+        if (entry.value() instanceof RedisStream) return Resp.simple("stream");
 
         return Resp.simple("none"); // streams will get their own branch in a later stage
     }
@@ -140,6 +143,47 @@ public class CommandHandler {
         });
 
         return wrongType[0] ? Resp.wrongType() : Resp.integer(newSize[0]);
+    }
+
+    private byte[] xadd(List<String> cmd) {
+        // XADD key id field value [field value ...]  -> 5, 7, 9... arguments (always odd)
+        if (cmd.size() < 5 || cmd.size() % 2 == 0) return wrongArgs("xadd");
+
+        String key = cmd.get(1);
+
+        StreamId id;
+        try {
+            id = StreamId.parse(cmd.get(2));
+        } catch (IllegalArgumentException e) {   // NumberFormatException is a subclass
+            return Resp.error("Invalid stream ID specified as stream command argument");
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();   // keeps field order
+        for (int i = 3; i < cmd.size(); i += 2) {
+            fields.put(cmd.get(i), cmd.get(i + 1));
+        }
+
+        boolean[] wrongType = new boolean[1];
+
+        store.compute(key, (k, existing) -> {
+            Entry current = (existing != null && !existing.isExpired()) ? existing : null;
+
+            RedisStream stream;
+            if (current == null) {
+                stream = new RedisStream();
+                current = new Entry(stream, NO_EXPIRY);
+            } else if (current.value() instanceof RedisStream s) {
+                stream = s;
+            } else {
+                wrongType[0] = true;
+                return current;
+            }
+
+            stream.add(new RedisStream.StreamEntry(id, fields));
+            return current;
+        });
+
+        return wrongType[0] ? Resp.wrongType() : Resp.bulk(id.toString());
     }
 
     @SuppressWarnings("unchecked")
