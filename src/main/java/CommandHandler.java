@@ -149,17 +149,25 @@ public class CommandHandler {
         if (cmd.size() < 5 || cmd.size() % 2 == 0) return wrongArgs("xadd");
 
         String key = cmd.get(1);
+        String idArg = cmd.get(2);
 
-        StreamId id;
+        // Work out which of the three ID formats we were given
+        boolean autoTime = idArg.equals("*");            // "*"
+        boolean autoSeq = idArg.endsWith("-*");          // "1526919030474-*"
+        long autoSeqMs = 0;
+        StreamId explicitId = null;
+
         try {
-            id = StreamId.parse(cmd.get(2));
-        } catch (IllegalArgumentException e) {
+            if (autoSeq) {
+                autoSeqMs = Long.parseLong(idArg.substring(0, idArg.length() - 2));
+            } else if (!autoTime) {
+                explicitId = StreamId.parse(idArg);
+                if (explicitId.ms() == 0 && explicitId.seq() == 0) {
+                    return Resp.error("The ID specified in XADD must be greater than 0-0");
+                }
+            }
+        } catch (IllegalArgumentException e) {           // includes NumberFormatException
             return Resp.error("Invalid stream ID specified as stream command argument");
-        }
-
-        // 0-0 is never valid, whether or not the stream already exists
-        if (id.ms() == 0 && id.seq() == 0) {
-            return Resp.error("The ID specified in XADD must be greater than 0-0");
         }
 
         Map<String, String> fields = new LinkedHashMap<>();
@@ -167,7 +175,12 @@ public class CommandHandler {
             fields.put(cmd.get(i), cmd.get(i + 1));
         }
 
-        byte[][] failure = new byte[1][];   // set when the command must be rejected
+        final boolean fAutoTime = autoTime, fAutoSeq = autoSeq;
+        final long fAutoSeqMs = autoSeqMs;
+        final StreamId fExplicit = explicitId;
+
+        byte[][] failure = new byte[1][];
+        StreamId[] resolved = new StreamId[1];
 
         store.compute(key, (k, existing) -> {
             Entry current = (existing != null && !existing.isExpired()) ? existing : null;
@@ -184,16 +197,39 @@ public class CommandHandler {
             }
 
             StreamId last = stream.lastId();
+            StreamId id;
+
+            if (fAutoTime) {
+                long now = System.currentTimeMillis();
+                if (last != null && last.ms() >= now) {
+                    id = new StreamId(last.ms(), last.seq() + 1);   // clock didn't advance: bump the sequence
+                } else {
+                    id = new StreamId(now, 0);
+                }
+            } else if (fAutoSeq) {
+                long seq;
+                if (last != null && last.ms() == fAutoSeqMs) {
+                    seq = last.seq() + 1;                           // same time part: last sequence + 1
+                } else {
+                    seq = (fAutoSeqMs == 0) ? 1 : 0;                // new time part: 0, or 1 when time is 0
+                }
+                id = new StreamId(fAutoSeqMs, seq);
+            } else {
+                id = fExplicit;
+            }
+
+            // Same rule for all three formats: the new ID must beat the last one
             if (last != null && id.compareTo(last) <= 0) {
                 failure[0] = Resp.error("The ID specified in XADD is equal or smaller than the target stream top item");
                 return current;
             }
 
             stream.add(new RedisStream.StreamEntry(id, fields));
+            resolved[0] = id;
             return current;
         });
 
-        return failure[0] != null ? failure[0] : Resp.bulk(id.toString());
+        return failure[0] != null ? failure[0] : Resp.bulk(resolved[0].toString());
     }
 
     @SuppressWarnings("unchecked")
