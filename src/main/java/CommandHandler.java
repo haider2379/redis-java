@@ -29,6 +29,24 @@ public class CommandHandler {
     public byte[] handle(ClientSession session, List<String> cmd) {
         if (cmd.isEmpty()) return Resp.error("empty command");
 
+        if (session.inTransaction()) {
+            String name = cmd.get(0).toUpperCase();
+            switch (name) {
+                case "EXEC":
+                    return exec(session, cmd);
+                case "MULTI":
+                    return Resp.error("MULTI calls can not be nested");
+                default:
+                    session.queue(cmd);              // stored, NOT executed
+                    return Resp.simple("QUEUED");
+            }
+        }
+
+        return dispatch(session, cmd);
+    }
+
+    /** Runs one command immediately. */
+    private byte[] dispatch(ClientSession session, List<String> cmd) {
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
             case "PING"   -> Resp.simple("PONG");
@@ -144,10 +162,13 @@ public class CommandHandler {
             return Resp.error("EXEC without MULTI");
         }
 
-        // Queued commands don't exist yet (a later stage), so the transaction is always empty here.
-        // An empty transaction returns an empty array, which is also what real Redis does.
-        session.endTransaction();
-        return Resp.rawArray(List.of());
+        List<List<String>> queued = session.endTransaction();   // leaves transaction mode first
+
+        List<byte[]> replies = new ArrayList<>();
+        for (List<String> queuedCmd : queued) {
+            replies.add(dispatch(session, queuedCmd));
+        }
+        return Resp.rawArray(replies);
     }
 
     /** Reads all streams once. Returns the RESP reply, or null if no stream has new entries. */
