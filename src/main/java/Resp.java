@@ -46,6 +46,16 @@ public final class Resp {
         return out.toByteArray();
     }
 
+    /** Wraps already-encoded RESP values in an array, so arrays can contain arrays. */
+    public static byte[] rawArray(List<byte[]> encodedElements) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(("*" + encodedElements.size() + "\r\n").getBytes(StandardCharsets.UTF_8));
+        for (byte[] element : encodedElements) {
+            out.writeBytes(element);
+        }
+        return out.toByteArray();
+    }
+
     public static byte[] wrongType() {
         // Real Redis uses the WRONGTYPE prefix instead of the generic ERR
         return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"

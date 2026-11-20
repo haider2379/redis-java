@@ -18,4 +18,14 @@ public class RedisStream {
     public StreamId lastId() {
         return entries.isEmpty() ? null : entries.get(entries.size() - 1).id();
     }
+
+    public List<StreamEntry> range(StreamId start, StreamId end) {
+        List<StreamEntry> result = new ArrayList<>();
+        for (StreamEntry e : entries) {
+            if (e.id().compareTo(start) >= 0 && e.id().compareTo(end) <= 0) {
+                result.add(e);
+            }
+        }
+        return result;
+    }
 }

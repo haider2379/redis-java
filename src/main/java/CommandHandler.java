@@ -29,6 +29,7 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "XRANGE" -> xrange(cmd);
             case "XADD" -> xadd(cmd);
             case "TYPE" -> type(cmd);
             case "BLPOP" -> blpop(cmd);
@@ -389,6 +390,66 @@ public class CommandHandler {
             // complete() fails if that waiter already timed out; then the element stays and we try the next waiter
             if (waiter.complete(list.get(0))) list.remove(0);
         }
+    }
+
+    private byte[] xrange(List<String> cmd) {
+        if (cmd.size() != 4) return wrongArgs("xrange");
+
+        StreamId start, end;
+        try {
+            start = parseRangeId(cmd.get(2), true);
+            end = parseRangeId(cmd.get(3), false);
+        } catch (IllegalArgumentException e) {
+            return Resp.error("Invalid stream ID specified as stream command argument");
+        }
+
+        byte[][] reply = new byte[1][];
+
+        // compute() so we never read the entry list while XADD is appending to it
+        store.compute(cmd.get(1), (k, existing) -> {
+            if (existing == null || existing.isExpired()) {
+                reply[0] = Resp.rawArray(List.of());              // missing key: empty array
+                return existing;
+            }
+            if (!(existing.value() instanceof RedisStream stream)) {
+                reply[0] = Resp.wrongType();
+                return existing;
+            }
+
+            List<byte[]> encodedEntries = new ArrayList<>();
+            for (RedisStream.StreamEntry e : stream.range(start, end)) {
+                encodedEntries.add(encodeEntry(e));
+            }
+            reply[0] = Resp.rawArray(encodedEntries);
+            return existing;
+        });
+
+        return reply[0];
+    }
+
+    /** Encodes one entry as [id, [field1, value1, field2, value2, ...]]. */
+    private byte[] encodeEntry(RedisStream.StreamEntry e) {
+        List<String> flatFields = new ArrayList<>();
+        e.fields().forEach((field, value) -> {
+            flatFields.add(field);
+            flatFields.add(value);
+        });
+        return Resp.rawArray(List.of(
+                Resp.bulk(e.id().toString()),
+                Resp.array(flatFields)
+        ));
+    }
+
+    /** Parses "1526985054069", "1526985054069-5", "-" or "+". */
+    private StreamId parseRangeId(String s, boolean isStart) {
+        if (s.equals("-")) return new StreamId(0, 0);
+        if (s.equals("+")) return new StreamId(Long.MAX_VALUE, Long.MAX_VALUE);
+
+        if (s.indexOf('-') < 0) {                                   // no sequence number given
+            long ms = Long.parseLong(s);
+            return new StreamId(ms, isStart ? 0 : Long.MAX_VALUE);  // start: 0, end: max
+        }
+        return StreamId.parse(s);
     }
 
     private byte[] llen(List<String> cmd) {
