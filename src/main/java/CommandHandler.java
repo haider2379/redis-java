@@ -68,7 +68,7 @@ public class CommandHandler {
             case "XADD"   -> xadd(cmd);
             case "XRANGE" -> xrange(cmd);
             case "XREAD"  -> xread(cmd);
-            case "WATCH"  -> watch(cmd);
+            case "WATCH"  -> watch(session, cmd);
             case "MULTI"  -> multi(session, cmd);
             case "EXEC"   -> exec(session, cmd);
             case "DISCARD"-> discard(session, cmd);
@@ -231,10 +231,12 @@ public class CommandHandler {
         return Resp.simple("none"); // streams will get their own branch in a later stage
     }
 
-    private byte[] watch(List<String> cmd) {
+    private byte[] watch(ClientSession session, List<String> cmd) {
         if (cmd.size() < 2) return wrongArgs("watch");
 
-        // Tracking comes in later stages; for now we only acknowledge the command.
+        for (int i = 1; i < cmd.size(); i++) {
+            session.watch(cmd.get(i));
+        }
         return Resp.simple("OK");
     }
 

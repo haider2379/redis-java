@@ -1,5 +1,7 @@
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /** State that belongs to one client connection (as opposed to the shared data store). */
 public class ClientSession {
@@ -25,5 +27,15 @@ public class ClientSession {
         List<List<String>> result = new ArrayList<>(queued);
         queued.clear();
         return result;
+    }
+
+    private final Set<String> watchedKeys = new LinkedHashSet<>();
+
+    public void watch(String key) {
+        watchedKeys.add(key);
+    }
+
+    public Set<String> watchedKeys() {
+        return watchedKeys;
     }
 }
