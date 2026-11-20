@@ -28,4 +28,15 @@ public class RedisStream {
         }
         return result;
     }
+
+    /** Entries with an ID strictly greater than the given one (XREAD is exclusive). */
+    public List<StreamEntry> after(StreamId id) {
+        List<StreamEntry> result = new ArrayList<>();
+        for (StreamEntry e : entries) {
+            if (e.id().compareTo(id) > 0) {
+                result.add(e);
+            }
+        }
+        return result;
+    }
 }

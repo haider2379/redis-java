@@ -29,6 +29,7 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "XREAD" -> xread(cmd);
             case "XRANGE" -> xrange(cmd);
             case "XADD" -> xadd(cmd);
             case "TYPE" -> type(cmd);
@@ -425,6 +426,57 @@ public class CommandHandler {
         });
 
         return reply[0];
+    }
+
+    private byte[] xread(List<String> cmd) {
+        // XREAD STREAMS key1 [key2 ...] id1 [id2 ...]
+        // After "STREAMS" the arguments split in half: first the keys, then the matching IDs.
+        if (cmd.size() < 4 || !cmd.get(1).equalsIgnoreCase("STREAMS") || (cmd.size() - 2) % 2 != 0) {
+            return Resp.error("syntax error");
+        }
+
+        int n = (cmd.size() - 2) / 2;
+        List<byte[]> streamResults = new ArrayList<>();
+
+        for (int i = 0; i < n; i++) {
+            String key = cmd.get(2 + i);
+
+            StreamId after;
+            try {
+                after = parseRangeId(cmd.get(2 + n + i), true);   // "5" means "5-0"
+            } catch (IllegalArgumentException e) {
+                return Resp.error("Invalid stream ID specified as stream command argument");
+            }
+
+            List<byte[]> encodedEntries = new ArrayList<>();
+            boolean[] wrongType = new boolean[1];
+
+            store.compute(key, (k, existing) -> {
+                if (existing == null || existing.isExpired()) return existing;
+                if (!(existing.value() instanceof RedisStream stream)) {
+                    wrongType[0] = true;
+                    return existing;
+                }
+                for (RedisStream.StreamEntry e : stream.after(after)) {
+                    encodedEntries.add(encodeEntry(e));
+                }
+                return existing;
+            });
+
+            if (wrongType[0]) return Resp.wrongType();
+
+            if (!encodedEntries.isEmpty()) {
+                streamResults.add(Resp.rawArray(List.of(
+                        Resp.bulk(key),
+                        Resp.rawArray(encodedEntries)
+                )));
+            }
+        }
+
+        // Nothing new on any stream: real Redis replies with a null array
+        if (streamResults.isEmpty()) return Resp.nullArray();
+
+        return Resp.rawArray(streamResults);
     }
 
     /** Encodes one entry as [id, [field1, value1, field2, value2, ...]]. */
