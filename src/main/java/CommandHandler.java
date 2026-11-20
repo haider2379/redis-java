@@ -26,27 +26,28 @@ public class CommandHandler {
     // stream key -> clients blocked in XREAD on that key (they get a "wake up and re-check" signal)
     private final Map<String, List<CompletableFuture<Void>>> streamWaiters = new ConcurrentHashMap<>();
 
-    public byte[] handle(List<String> cmd) {
+    public byte[] handle(ClientSession session, List<String> cmd) {
         if (cmd.isEmpty()) return Resp.error("empty command");
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
-            case "INCR" -> incr(cmd);
-            case "XREAD" -> xread(cmd);
-            case "XRANGE" -> xrange(cmd);
-            case "XADD" -> xadd(cmd);
-            case "TYPE" -> type(cmd);
-            case "BLPOP" -> blpop(cmd);
-            case "LPOP" -> lpop(cmd);
-            case "LLEN" -> llen(cmd);
-            case "LPUSH" -> push(cmd, true);
+            case "PING"   -> Resp.simple("PONG");
+            case "ECHO"   -> echo(cmd);
+            case "SET"    -> set(cmd);
+            case "GET"    -> get(cmd);
+            case "INCR"   -> incr(cmd);
+            case "RPUSH"  -> push(cmd, false);
+            case "LPUSH"  -> push(cmd, true);
             case "LRANGE" -> lrange(cmd);
-            case "PING"  -> Resp.simple("PONG");
-            case "ECHO"  -> echo(cmd);
-            case "SET"   -> set(cmd);
-            case "GET"   -> get(cmd);
-            case "RPUSH" -> push(cmd, false);
-            default      -> Resp.error("unknown command '" + cmd.get(0) + "'");
+            case "LLEN"   -> llen(cmd);
+            case "LPOP"   -> lpop(cmd);
+            case "BLPOP"  -> blpop(cmd);
+            case "TYPE"   -> type(cmd);
+            case "XADD"   -> xadd(cmd);
+            case "XRANGE" -> xrange(cmd);
+            case "XREAD"  -> xread(cmd);
+            case "MULTI"  -> multi(session, cmd);
+            default       -> Resp.error("unknown command '" + cmd.get(0) + "'");
         };
     }
 
@@ -127,6 +128,12 @@ public class CommandHandler {
             return e;
         });
         return out[0];
+    }
+
+    private byte[] multi(ClientSession session, List<String> cmd) {
+        if (cmd.size() != 1) return wrongArgs("multi");
+        session.startTransaction();
+        return Resp.simple("OK");
     }
 
     /** Reads all streams once. Returns the RESP reply, or null if no stream has new entries. */

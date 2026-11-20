@@ -22,13 +22,15 @@ public class Main {
     }
 
     private static void serve(Socket client, CommandHandler handler) {
+        ClientSession session = new ClientSession();   // one per connection
+
         try (client;
              InputStream in = new BufferedInputStream(client.getInputStream());
              OutputStream out = client.getOutputStream()) {
 
             List<String> command;
             while ((command = Resp.readCommand(in)) != null) {
-                out.write(handler.handle(command));
+                out.write(handler.handle(session, command));   // session added
                 out.flush();
             }
         } catch (IOException e) {
