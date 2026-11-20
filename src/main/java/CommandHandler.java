@@ -28,6 +28,7 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "TYPE" -> type(cmd);
             case "BLPOP" -> blpop(cmd);
             case "LPOP" -> lpop(cmd);
             case "LLEN" -> llen(cmd);
@@ -87,6 +88,18 @@ public class CommandHandler {
         }
         if (!(entry.value() instanceof String s)) return Resp.wrongType();
         return Resp.bulk(s);
+    }
+
+    private byte[] type(List<String> cmd) {
+        if (cmd.size() != 2) return wrongArgs("type");
+
+        Entry entry = store.get(cmd.get(1));
+        if (entry == null || entry.isExpired()) return Resp.simple("none");
+
+        if (entry.value() instanceof String) return Resp.simple("string");
+        if (entry.value() instanceof List<?>) return Resp.simple("list");
+
+        return Resp.simple("none"); // streams will get their own branch in a later stage
     }
 
     @SuppressWarnings("unchecked")
