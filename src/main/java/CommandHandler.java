@@ -31,6 +31,7 @@ public class CommandHandler {
 
         String name = cmd.get(0).toUpperCase();
         return switch (name) {
+            case "INCR" -> incr(cmd);
             case "XREAD" -> xread(cmd);
             case "XRANGE" -> xrange(cmd);
             case "XADD" -> xadd(cmd);
@@ -209,6 +210,48 @@ public class CommandHandler {
         });
 
         return wrongType[0] ? Resp.wrongType() : Resp.integer(newSize[0]);
+    }
+
+    private byte[] incr(List<String> cmd) {
+        if (cmd.size() != 2) return wrongArgs("incr");
+
+        byte[][] failure = new byte[1][];
+        long[] result = new long[1];
+
+        // compute() makes read-modify-write atomic, so two clients can't both read 5 and both write 6
+        store.compute(cmd.get(1), (k, existing) -> {
+            // Missing or expired key: treat as 0, so the result is 1
+            if (existing == null || existing.isExpired()) {
+                result[0] = 1;
+                return new Entry("1", NO_EXPIRY);
+            }
+
+            // Lists and streams can't be incremented
+            if (!(existing.value() instanceof String s)) {
+                failure[0] = Resp.wrongType();
+                return existing;
+            }
+
+            long current;
+            try {
+                current = Long.parseLong(s);
+            } catch (NumberFormatException e) {
+                failure[0] = Resp.error("value is not an integer or out of range");
+                return existing;                       // leave the value untouched
+            }
+
+            try {
+                result[0] = Math.addExact(current, 1);
+            } catch (ArithmeticException e) {          // Long.MAX_VALUE + 1
+                failure[0] = Resp.error("increment or decrement would overflow");
+                return existing;
+            }
+
+            // Keep the existing expiry, as real Redis does
+            return new Entry(Long.toString(result[0]), existing.expiresAtMs());
+        });
+
+        return failure[0] != null ? failure[0] : Resp.integer(result[0]);
     }
 
     private byte[] xadd(List<String> cmd) {
