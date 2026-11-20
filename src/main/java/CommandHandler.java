@@ -47,6 +47,7 @@ public class CommandHandler {
             case "XRANGE" -> xrange(cmd);
             case "XREAD"  -> xread(cmd);
             case "MULTI"  -> multi(session, cmd);
+            case "EXEC"   -> exec(session, cmd);
             default       -> Resp.error("unknown command '" + cmd.get(0) + "'");
         };
     }
@@ -134,6 +135,19 @@ public class CommandHandler {
         if (cmd.size() != 1) return wrongArgs("multi");
         session.startTransaction();
         return Resp.simple("OK");
+    }
+
+    private byte[] exec(ClientSession session, List<String> cmd) {
+        if (cmd.size() != 1) return wrongArgs("exec");
+
+        if (!session.inTransaction()) {
+            return Resp.error("EXEC without MULTI");
+        }
+
+        // Queued commands don't exist yet (a later stage), so the transaction is always empty here.
+        // An empty transaction returns an empty array, which is also what real Redis does.
+        session.endTransaction();
+        return Resp.rawArray(List.of());
     }
 
     /** Reads all streams once. Returns the RESP reply, or null if no stream has new entries. */

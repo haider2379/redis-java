@@ -9,4 +9,8 @@ public class ClientSession {
     public void startTransaction() {
         inTransaction = true;
     }
+
+    public void endTransaction() {
+        inTransaction = false;
+    }
 }
