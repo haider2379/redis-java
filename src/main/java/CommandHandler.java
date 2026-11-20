@@ -34,10 +34,12 @@ public class CommandHandler {
             switch (name) {
                 case "EXEC":
                     return exec(session, cmd);
+                case "DISCARD":
+                    return discard(session, cmd);          // new
                 case "MULTI":
                     return Resp.error("MULTI calls can not be nested");
                 default:
-                    session.queue(cmd);              // stored, NOT executed
+                    session.queue(cmd);
                     return Resp.simple("QUEUED");
             }
         }
@@ -66,6 +68,7 @@ public class CommandHandler {
             case "XREAD"  -> xread(cmd);
             case "MULTI"  -> multi(session, cmd);
             case "EXEC"   -> exec(session, cmd);
+            case "DISCARD"-> discard(session, cmd);
             default       -> Resp.error("unknown command '" + cmd.get(0) + "'");
         };
     }
@@ -169,6 +172,17 @@ public class CommandHandler {
             replies.add(dispatch(session, queuedCmd));
         }
         return Resp.rawArray(replies);
+    }
+
+    private byte[] discard(ClientSession session, List<String> cmd) {
+        if (cmd.size() != 1) return wrongArgs("discard");
+
+        if (!session.inTransaction()) {
+            return Resp.error("DISCARD without MULTI");
+        }
+
+        session.endTransaction();     // leaves transaction mode and drops the queue; the return value is ignored
+        return Resp.simple("OK");
     }
 
     /** Reads all streams once. Returns the RESP reply, or null if no stream has new entries. */
