@@ -23,6 +23,8 @@ public class CommandHandler {
     private final Map<String, Entry> store = new ConcurrentHashMap<>();
     // key -> clients blocked on that list, oldest first
     private final Map<String, Queue<CompletableFuture<String>>> waiters = new ConcurrentHashMap<>();
+    // stream key -> clients blocked in XREAD on that key (they get a "wake up and re-check" signal)
+    private final Map<String, List<CompletableFuture<Void>>> streamWaiters = new ConcurrentHashMap<>();
 
     public byte[] handle(List<String> cmd) {
         if (cmd.isEmpty()) return Resp.error("empty command");
@@ -92,6 +94,68 @@ public class CommandHandler {
         }
         if (!(entry.value() instanceof String s)) return Resp.wrongType();
         return Resp.bulk(s);
+    }
+
+    private void registerStreamWaiter(String key, CompletableFuture<Void> signal) {
+        streamWaiters.compute(key, (k, list) -> {
+            if (list == null) list = new ArrayList<>();
+            list.add(signal);
+            return list;
+        });
+    }
+
+    private void unregisterStreamWaiter(String key, CompletableFuture<Void> signal) {
+        streamWaiters.computeIfPresent(key, (k, list) -> {
+            list.remove(signal);
+            return list.isEmpty() ? null : list;
+        });
+    }
+
+    private void signalStreamWaiters(String key) {
+        List<CompletableFuture<Void>> list = streamWaiters.remove(key);   // atomic with register/unregister
+        if (list != null) list.forEach(f -> f.complete(null));
+    }
+
+    /** The stream's last ID, or 0-0 if the stream doesn't exist yet (used to resolve "$"). */
+    private StreamId lastIdOf(String key) {
+        StreamId[] out = { new StreamId(0, 0) };
+        store.compute(key, (k, e) -> {
+            if (e != null && !e.isExpired() && e.value() instanceof RedisStream s && s.lastId() != null) {
+                out[0] = s.lastId();
+            }
+            return e;
+        });
+        return out[0];
+    }
+
+    /** Reads all streams once. Returns the RESP reply, or null if no stream has new entries. */
+    private byte[] collectStreams(List<String> keys, StreamId[] after) {
+        List<byte[]> results = new ArrayList<>();
+
+        for (int j = 0; j < keys.size(); j++) {
+            String key = keys.get(j);
+            StreamId from = after[j];
+            List<byte[]> encoded = new ArrayList<>();
+            boolean[] wrongType = new boolean[1];
+
+            store.compute(key, (k, existing) -> {
+                if (existing == null || existing.isExpired()) return existing;
+                if (!(existing.value() instanceof RedisStream stream)) {
+                    wrongType[0] = true;
+                    return existing;
+                }
+                for (RedisStream.StreamEntry e : stream.after(from)) {
+                    encoded.add(encodeEntry(e));
+                }
+                return existing;
+            });
+
+            if (wrongType[0]) return Resp.wrongType();
+            if (!encoded.isEmpty()) {
+                results.add(Resp.rawArray(List.of(Resp.bulk(key), Resp.rawArray(encoded))));
+            }
+        }
+        return results.isEmpty() ? null : Resp.rawArray(results);
     }
 
     private byte[] type(List<String> cmd) {
@@ -231,7 +295,9 @@ public class CommandHandler {
             return current;
         });
 
-        return failure[0] != null ? failure[0] : Resp.bulk(resolved[0].toString());
+        if (failure[0] != null) return failure[0];
+        signalStreamWaiters(key);            // after the entry is stored, wake anyone blocked on this key
+        return Resp.bulk(resolved[0].toString());
     }
 
     @SuppressWarnings("unchecked")
@@ -429,54 +495,78 @@ public class CommandHandler {
     }
 
     private byte[] xread(List<String> cmd) {
-        // XREAD STREAMS key1 [key2 ...] id1 [id2 ...]
-        // After "STREAMS" the arguments split in half: first the keys, then the matching IDs.
-        if (cmd.size() < 4 || !cmd.get(1).equalsIgnoreCase("STREAMS") || (cmd.size() - 2) % 2 != 0) {
-            return Resp.error("syntax error");
-        }
-
-        int n = (cmd.size() - 2) / 2;
-        List<byte[]> streamResults = new ArrayList<>();
-
-        for (int i = 0; i < n; i++) {
-            String key = cmd.get(2 + i);
-
-            StreamId after;
+        // XREAD [BLOCK ms] STREAMS key1 [key2 ...] id1 [id2 ...]
+        int i = 1;
+        long blockMs = -1;                                   // -1 = don't block
+        if (cmd.size() > 2 && cmd.get(1).equalsIgnoreCase("BLOCK")) {
             try {
-                after = parseRangeId(cmd.get(2 + n + i), true);   // "5" means "5-0"
-            } catch (IllegalArgumentException e) {
-                return Resp.error("Invalid stream ID specified as stream command argument");
+                blockMs = Long.parseLong(cmd.get(2));
+            } catch (NumberFormatException e) {
+                return Resp.error("timeout is not an integer or out of range");
             }
-
-            List<byte[]> encodedEntries = new ArrayList<>();
-            boolean[] wrongType = new boolean[1];
-
-            store.compute(key, (k, existing) -> {
-                if (existing == null || existing.isExpired()) return existing;
-                if (!(existing.value() instanceof RedisStream stream)) {
-                    wrongType[0] = true;
-                    return existing;
-                }
-                for (RedisStream.StreamEntry e : stream.after(after)) {
-                    encodedEntries.add(encodeEntry(e));
-                }
-                return existing;
-            });
-
-            if (wrongType[0]) return Resp.wrongType();
-
-            if (!encodedEntries.isEmpty()) {
-                streamResults.add(Resp.rawArray(List.of(
-                        Resp.bulk(key),
-                        Resp.rawArray(encodedEntries)
-                )));
-            }
+            if (blockMs < 0) return Resp.error("timeout is negative");
+            i = 3;
         }
 
-        // Nothing new on any stream: real Redis replies with a null array
-        if (streamResults.isEmpty()) return Resp.nullArray();
+        if (i >= cmd.size() || !cmd.get(i).equalsIgnoreCase("STREAMS")) return Resp.error("syntax error");
 
-        return Resp.rawArray(streamResults);
+        int rest = cmd.size() - i - 1;
+        if (rest < 2 || rest % 2 != 0) return Resp.error("syntax error");
+
+        int n = rest / 2;
+        List<String> keys = cmd.subList(i + 1, i + 1 + n);
+        List<String> idArgs = cmd.subList(i + 1 + n, cmd.size());
+
+        StreamId[] after = new StreamId[n];
+        try {
+            for (int j = 0; j < n; j++) {
+                after[j] = idArgs.get(j).equals("$")
+                        ? lastIdOf(keys.get(j))              // "$" = only entries added from now on
+                        : parseRangeId(idArgs.get(j), true);
+            }
+        } catch (IllegalArgumentException e) {
+            return Resp.error("Invalid stream ID specified as stream command argument");
+        }
+
+        // Non-blocking: one read
+        if (blockMs < 0) {
+            byte[] reply = collectStreams(keys, after);
+            return reply != null ? reply : Resp.nullArray();
+        }
+
+        // Blocking: register for a wake-up signal FIRST, then check the data.
+        // That order means an XADD can never slip in between "nothing there" and "now waiting".
+        long deadline = System.nanoTime() + blockMs * 1_000_000L;
+
+        while (true) {
+            CompletableFuture<Void> signal = new CompletableFuture<>();
+            for (String key : keys) registerStreamWaiter(key, signal);
+
+            try {
+                byte[] reply = collectStreams(keys, after);
+                if (reply != null) return reply;
+
+                if (blockMs == 0) {
+                    signal.get();                            // 0 = wait forever
+                } else {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) return Resp.nullArray();
+                    signal.get(remaining, TimeUnit.NANOSECONDS);
+                }
+                // woken up: loop around and re-read
+
+            } catch (TimeoutException e) {
+                byte[] reply = collectStreams(keys, after);  // last-instant check
+                return reply != null ? reply : Resp.nullArray();
+
+            } catch (InterruptedException | ExecutionException e) {
+                Thread.currentThread().interrupt();
+                return Resp.error("interrupted");
+
+            } finally {
+                for (String key : keys) unregisterStreamWaiter(key, signal);
+            }
+        }
     }
 
     /** Encodes one entry as [id, [field1, value1, field2, value2, ...]]. */
