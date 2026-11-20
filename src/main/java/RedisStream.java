@@ -14,4 +14,8 @@ public class RedisStream {
     public List<StreamEntry> entries() {
         return entries;
     }
+
+    public StreamId lastId() {
+        return entries.isEmpty() ? null : entries.get(entries.size() - 1).id();
+    }
 }

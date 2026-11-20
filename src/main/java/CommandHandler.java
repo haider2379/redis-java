@@ -146,7 +146,6 @@ public class CommandHandler {
     }
 
     private byte[] xadd(List<String> cmd) {
-        // XADD key id field value [field value ...]  -> 5, 7, 9... arguments (always odd)
         if (cmd.size() < 5 || cmd.size() % 2 == 0) return wrongArgs("xadd");
 
         String key = cmd.get(1);
@@ -154,16 +153,21 @@ public class CommandHandler {
         StreamId id;
         try {
             id = StreamId.parse(cmd.get(2));
-        } catch (IllegalArgumentException e) {   // NumberFormatException is a subclass
+        } catch (IllegalArgumentException e) {
             return Resp.error("Invalid stream ID specified as stream command argument");
         }
 
-        Map<String, String> fields = new LinkedHashMap<>();   // keeps field order
+        // 0-0 is never valid, whether or not the stream already exists
+        if (id.ms() == 0 && id.seq() == 0) {
+            return Resp.error("The ID specified in XADD must be greater than 0-0");
+        }
+
+        Map<String, String> fields = new LinkedHashMap<>();
         for (int i = 3; i < cmd.size(); i += 2) {
             fields.put(cmd.get(i), cmd.get(i + 1));
         }
 
-        boolean[] wrongType = new boolean[1];
+        byte[][] failure = new byte[1][];   // set when the command must be rejected
 
         store.compute(key, (k, existing) -> {
             Entry current = (existing != null && !existing.isExpired()) ? existing : null;
@@ -175,7 +179,13 @@ public class CommandHandler {
             } else if (current.value() instanceof RedisStream s) {
                 stream = s;
             } else {
-                wrongType[0] = true;
+                failure[0] = Resp.wrongType();
+                return current;
+            }
+
+            StreamId last = stream.lastId();
+            if (last != null && id.compareTo(last) <= 0) {
+                failure[0] = Resp.error("The ID specified in XADD is equal or smaller than the target stream top item");
                 return current;
             }
 
@@ -183,7 +193,7 @@ public class CommandHandler {
             return current;
         });
 
-        return wrongType[0] ? Resp.wrongType() : Resp.bulk(id.toString());
+        return failure[0] != null ? failure[0] : Resp.bulk(id.toString());
     }
 
     @SuppressWarnings("unchecked")
